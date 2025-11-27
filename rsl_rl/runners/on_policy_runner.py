@@ -89,6 +89,10 @@ class OnPolicyRunner:
         self.current_learning_iteration = 0
         self.git_status_repos = [rsl_rl.__file__]
 
+        # save policy
+        self.max_historical_reward = 0.0
+        self.max_historical_reward_it = 0
+
     def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
         # initialize writer
         if self.log_dir is not None and self.writer is None:
@@ -209,14 +213,31 @@ class OnPolicyRunner:
             stop = time.time()
             learn_time = stop - start
             self.current_learning_iteration = it
+            
+            save_largest_reward_policy:bool = False
+            if len(rewbuffer) > 0:
+                mean_rewbuffer = statistics.mean(rewbuffer)
+            else:
+                mean_rewbuffer = 0.0
+            if self.max_historical_reward < mean_rewbuffer:
+                save_largest_reward_policy = True
+                self.max_historical_reward = mean_rewbuffer
+                self.max_historical_reward_it = it
+            # for logging
+            max_historical_reward = self.max_historical_reward
+            max_historical_reward_it = self.max_historical_reward_it
 
             # Logging info and save checkpoint
             if self.log_dir is not None:
                 # Log information
+                # locals 返回当前作用域局部变量字典的一个拷贝，意味着 log() 会获得当前整个 update() 循环中的所有局部变量。所以即使没有使用到的局部变量也要保存下来，让locals获取
                 self.log(locals())
                 # Save model
                 if it % self.save_interval == 0:
                     self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+                elif save_largest_reward_policy:
+                    self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
+                    save_largest_reward_policy = False
 
             # Clear episode infos
             ep_infos.clear()
@@ -299,7 +320,6 @@ class OnPolicyRunner:
                 )
 
         str = f" \033[1m Learning iteration {locs['it']}/{locs['tot_iter']} \033[0m "
-
         if len(locs["rewbuffer"]) > 0:
             log_string = (
                 f"""{'#' * width}\n"""
@@ -323,7 +343,10 @@ class OnPolicyRunner:
                     f"""{'Mean intrinsic reward:':>{pad}} {statistics.mean(locs['irewbuffer']):.2f}\n"""
                 )
 
-            log_string += f"""{'Mean total reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+            # log_string += f"""{'Mean total reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+            log_string += f"""{'Mean total reward:':>{pad}} {locs['mean_rewbuffer']:.2f}\n"""
+            log_string += f"""{'Largest historical reward:':>{pad}} {locs['max_historical_reward']:.2f}\n"""
+            log_string += f"""{'Largest historical reward iteration:':>{pad}} {locs['max_historical_reward_it']}\n"""
             log_string += f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n"""
             #   f"""{'Mean reward/step:':>{pad}} {locs['mean_reward']:.2f}\n"""
             #   f"""{'Mean episode length/episode:':>{pad}} {locs['mean_trajectory_length']:.2f}\n""")
@@ -362,6 +385,8 @@ class OnPolicyRunner:
             "model_state_dict": self.alg.actor_critic.state_dict(),
             "optimizer_state_dict": self.alg.optimizer.state_dict(),
             "iter": self.current_learning_iteration,
+            "max_historical_reward": self.max_historical_reward,
+            "max_historical_reward_it": self.max_historical_reward_it,
             "infos": infos,
         }
         # -- Save RND model if used
@@ -398,6 +423,8 @@ class OnPolicyRunner:
                 self.alg.rnd_optimizer.load_state_dict(loaded_dict["rnd_optimizer_state_dict"])
         # -- Load current learning iteration
         self.current_learning_iteration = loaded_dict["iter"]
+        self.max_historical_reward = loaded_dict.get("max_historical_reward", 0)
+        self.max_historical_reward_it = loaded_dict.get("max_historical_reward_it", 0)
         return loaded_dict["infos"]
 
     def get_inference_policy(self, device=None):
